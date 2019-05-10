@@ -10,6 +10,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
+	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
 	loggly "github.com/jamespearly/loggly"
 	cron "gopkg.in/robfig/cron.v2"
 )
@@ -31,6 +35,11 @@ type SnowReport struct {
 	Conditions    string  `json:"conditions"`
 }
 
+type Item struct {
+	Reportdate string
+	Newsnow_in float64
+}
+
 func main() {
 
 	key, found := os.LookupEnv("LOGGLY_TOKEN")
@@ -39,13 +48,60 @@ func main() {
 	}
 	fmt.Println(key)
 
+	getSnowReport()
 	c := cron.New()
-	c.AddFunc("@every 1m", getSnowReport)
+	c.AddFunc("@every 1d", getSnowReport)
 	c.Start()
 
 	sig := make(chan os.Signal)
 	signal.Notify(sig, os.Interrupt, os.Kill)
 	<-sig
+
+}
+
+func sendResponseToDynamoDB(snowreport SnowReport) {
+	var tag string
+	tag = "Kitzbuhel-Snow-Report"
+
+	logglyClient := loggly.New(tag)
+
+	sess, err := session.NewSession(&aws.Config{
+		Region: aws.String("us-east-1")},
+	)
+
+	if err != nil {
+		log.Fatal("Item Failed: ", err)
+		logglyLog := logglyClient.EchoSend("Item Failed: ", err.Error())
+		fmt.Println("logglyLog:", logglyLog)
+		return
+	}
+
+	// Create DynamoDB client
+	svc := dynamodb.New(sess)
+
+	it := Item{
+		snowreport.Reportdate,
+		snowreport.Newsnow_in,
+	}
+
+	av, err := dynamodbattribute.MarshalMap(it)
+
+	input := &dynamodb.PutItemInput{
+		Item:      av,
+		TableName: aws.String("SnowReport"),
+	}
+
+	_, err = svc.PutItem(input)
+
+	if err != nil {
+		//log.Fatal("Put Failed: ", err)
+		fmt.Println(err)
+		logglyLog := logglyClient.EchoSend("Put Failed: ", err.Error())
+		fmt.Println("logglyLog:", logglyLog)
+		return
+	}
+
+	fmt.Print("Succesfully addded all items to DynamoDB!")
 
 }
 
@@ -55,7 +111,7 @@ func getSnowReport() {
 
 	logglyClient := loggly.New(tag)
 
-	url := "https://api.weatherunlocked.com/api/snowreport/..."
+	url := "https://api.weatherunlocked.com/api/snowreport/222013?app_id=08c12f0a&app_key=13ae4e2cd3b974483ea0ac6903ac8cfc"
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -103,6 +159,7 @@ func getSnowReport() {
 	fmt.Println("reporttime    = ", record.Reporttime)
 	fmt.Println("conditions    = ", record.Conditions)
 	fmt.Println(" ")
+	sendResponseToDynamoDB(record)
 }
 
 func floattostr(input_num float64) string {
